@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading_system"
+version = "0.1.0"
+description = "Production-grade architecture skeleton for an intraday multi-agent trading system."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.13.0,<3",
+]
+
+[project.optional-dependencies]
+market-data = [
+    "pandas>=2.2.0",
+    "yfinance>=0.2.54",
+]
+ml = [
+    "numpy>=2.0.0",
+    "pandas>=2.2.0",
+    "xgboost>=2.1.0",
+]
+execution = [
+    "ib_insync>=0.9.86",
+]
+backtest = [
+    "pandas>=2.2.0",
+]
+system = [
+    "pandas>=2.2.0",
+    "pydantic>=2.13.0,<3",
+    "xgboost>=2.1.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["trading_system*"]

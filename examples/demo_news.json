@@ -1,0 +1,22 @@
+{
+  "articles": [
+    {
+      "id": "news-001",
+      "title": "AAPL launches stronger enterprise demand program",
+      "url": "https://local.demo/news/aapl-launch",
+      "summary": "Management cites strong demand and partnership wins.",
+      "content": "AAPL launch and partnership commentary points to strong demand across enterprise buyers.",
+      "published_at": "2026-04-14T15:00:00+00:00",
+      "symbols": ["AAPL"]
+    },
+    {
+      "id": "news-002",
+      "title": "Sector investigation raises compliance questions",
+      "url": "https://local.demo/news/sector-investigation",
+      "summary": "An industry investigation increases uncertainty.",
+      "content": "A new investigation may pressure sentiment across the sector.",
+      "published_at": "2026-04-14T15:45:00+00:00",
+      "symbols": []
+    }
+  ]
+}

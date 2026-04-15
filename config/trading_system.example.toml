@@ -1,0 +1,74 @@
+[logging]
+level = "INFO"
+format = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+[market]
+symbol = "AAPL"
+start_timestamp = "2026-04-14T13:30:00+00:00"
+training_bars = 180
+stream_bars = 24
+bar_interval_minutes = 5
+base_price = 100.0
+trend_per_bar = 0.08
+amplitude = 1.15
+base_volume = 1250000.0
+validation_fraction = 0.2
+min_training_rows = 60
+n_estimators = 96
+learning_rate = 0.05
+max_depth = 4
+prediction_horizon_bars = 2
+
+[news]
+source_type = "json"
+source_path = "examples/demo_news.json"
+backend = "demo"
+model = "local-demo"
+base_url = "http://127.0.0.1:8000"
+timeout_seconds = 5.0
+max_retries = 2
+max_article_age_seconds = 14400.0
+
+[decision]
+action_threshold = 0.05
+
+[critic]
+max_volatility = 0.08
+min_confidence = 0.10
+conflict_threshold = 0.75
+
+[risk]
+max_risk_per_trade_fraction = 0.01
+atr_period = 14
+atr_multiplier = 2.0
+max_daily_loss_fraction = 0.03
+max_exposure_fraction = 0.50
+
+[execution]
+broker = "paper"
+initial_capital = 100000.0
+stale_order_seconds = 30.0
+exchange = "SMART"
+currency = "USD"
+tif = "DAY"
+smart_routing = true
+outside_rth = false
+host = "127.0.0.1"
+client_id = 11
+paper_trading = true
+fill_latency_seconds = 0.0
+read_only = false
+connection_timeout_seconds = 10.0
+request_timeout_seconds = 10.0
+max_retries = 3
+retry_backoff_seconds = 0.5
+allow_live_trading = false
+journal_path = "state/orders.json"
+
+[runtime]
+strategy_id = "integrated-intraday-demo"
+mode = "paper"
+publish_delay_seconds = 0.0
+allow_demo_components = true
+reconcile_on_start = true
+max_log_reason_length = 160
