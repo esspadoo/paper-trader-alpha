@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,12 @@ from trading_system.infra import TTLCache
 ContentFetcher = Callable[[str, float], bytes]
 
 _CONTENT_NAMESPACE = {"content": "http://purl.org/rss/1.0/modules/content/"}
+_TICKER_PATTERN = re.compile(r"\$([A-Z]{1,5})\b")
+_TICKER_PAREN_PATTERN = re.compile(r"\(([A-Z]{1,5})\)")
+_TICKER_CONTEXT_PATTERN = re.compile(
+    r"\b([A-Z]{1,5})\b(?=\s+(?:shares|stock|earnings|guidance|results|reported|reporting|said|surges|falls|drops|gains)\b)"
+)
+_CANONICAL_PATTERN = re.compile(r"[^a-z0-9]+")
 
 
 def _normalize_text(value: str | None) -> str:
@@ -41,6 +48,27 @@ def _normalize_symbols(symbols: list[str] | tuple[str, ...] | None) -> tuple[str
         normalized.append(candidate)
         seen.add(candidate)
     return tuple(normalized)
+
+
+def _extract_explicit_symbols(*texts: str) -> tuple[str, ...]:
+    """Return explicit ticker mentions from text using conservative rules."""
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        candidate_text = text or ""
+        matches = (
+            *_TICKER_PATTERN.findall(candidate_text),
+            *_TICKER_PAREN_PATTERN.findall(candidate_text),
+            *_TICKER_CONTEXT_PATTERN.findall(candidate_text),
+        )
+        for match in matches:
+            symbol = str(match).strip().upper()
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            found.append(symbol)
+    return tuple(found)
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
@@ -146,6 +174,29 @@ class NewsArticle:
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    @property
+    def canonical_fingerprint(self) -> str:
+        """Return a near-duplicate signature for cross-source article deduplication."""
+
+        canonical_text = _CANONICAL_PATTERN.sub(
+            " ",
+            " ".join(part for part in (self.title, self.summary, self.content) if part.strip()).lower(),
+        )
+        published_bucket = ""
+        if self.published_at is not None:
+            minute_bucket = (self.published_at.minute // 15) * 15
+            published_bucket = self.published_at.replace(minute=minute_bucket, second=0, microsecond=0).strftime(
+                "%Y-%m-%dT%H:%M"
+            )
+        payload = "|".join(
+            [
+                " ".join(token for token in canonical_text.split() if len(token) > 2),
+                ",".join(self.symbols),
+                published_bucket,
+            ]
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def to_prompt_context(self) -> dict[str, Any]:
         """Return a serializable article payload for prompt rendering."""
 
@@ -177,6 +228,8 @@ class NewsArticle:
         symbols = payload.get("symbols") or payload.get("tickers") or ()
         if isinstance(symbols, str):
             symbols = [token.strip() for token in symbols.split(",")]
+        if not symbols:
+            symbols = _extract_explicit_symbols(str(title), str(summary), str(content))
 
         return cls(
             source=_normalize_text(payload.get("source") or source_name),
@@ -201,6 +254,35 @@ class BaseNewsSource(ABC):
     @abstractmethod
     async def fetch_articles(self) -> list[NewsArticle]:
         """Return the latest available normalized articles."""
+
+
+class CompositeNewsSource(BaseNewsSource):
+    """Combine multiple sources behind a single provider abstraction."""
+
+    def __init__(self, *, source_name: str, sources: tuple[BaseNewsSource, ...] | list[BaseNewsSource]) -> None:
+        """Initialize a composed source from child providers."""
+
+        normalized_name = source_name.strip()
+        if not normalized_name:
+            raise ValueError("source_name must be a non-empty string")
+        if not sources:
+            raise ValueError("sources must contain at least one source")
+        self._source_name = normalized_name
+        self._sources = tuple(sources)
+
+    @property
+    def source_name(self) -> str:
+        """Return the composed source name."""
+
+        return self._source_name
+
+    async def fetch_articles(self) -> list[NewsArticle]:
+        """Fetch articles from each child source and merge the batches."""
+
+        articles: list[NewsArticle] = []
+        for source in self._sources:
+            articles.extend(await source.fetch_articles())
+        return articles
 
 
 class RSSNewsSource(BaseNewsSource):
@@ -397,21 +479,39 @@ class JSONNewsSource(BaseNewsSource):
 class NewsDeduplicator:
     """Deduplicate normalized articles using a TTL-backed fingerprint cache."""
 
-    def __init__(self, *, cache: TTLCache[str, bool] | None = None, ttl_seconds: float = 86_400.0) -> None:
+    def __init__(
+        self,
+        *,
+        cache: TTLCache[str, bool] | None = None,
+        canonical_cache: TTLCache[str, bool] | None = None,
+        ttl_seconds: float = 86_400.0,
+    ) -> None:
         """Initialize the deduplicator with a cache and TTL."""
 
         self._cache = cache or TTLCache[str, bool](default_ttl_seconds=ttl_seconds)
+        self._canonical_cache = canonical_cache or TTLCache[str, bool](default_ttl_seconds=ttl_seconds)
         self._ttl_seconds = ttl_seconds
 
     def has_seen(self, article: NewsArticle) -> bool:
         """Return whether the article fingerprint is already present."""
 
+        return self._cache.contains(article.fingerprint) or self._canonical_cache.contains(article.canonical_fingerprint)
+
+    def has_seen_exact(self, article: NewsArticle) -> bool:
+        """Return whether the exact article fingerprint is already present."""
+
         return self._cache.contains(article.fingerprint)
+
+    def has_seen_canonical(self, article: NewsArticle) -> bool:
+        """Return whether a near-duplicate signature is already present."""
+
+        return self._canonical_cache.contains(article.canonical_fingerprint)
 
     def mark_seen(self, article: NewsArticle) -> None:
         """Mark an article as processed."""
 
         self._cache.set(article.fingerprint, True, ttl_seconds=self._ttl_seconds)
+        self._canonical_cache.set(article.canonical_fingerprint, True, ttl_seconds=self._ttl_seconds)
 
     def is_duplicate(self, article: NewsArticle) -> bool:
         """Return whether the article fingerprint has already been seen."""

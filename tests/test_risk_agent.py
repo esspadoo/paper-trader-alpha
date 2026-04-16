@@ -163,6 +163,71 @@ class RiskAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(snapshot["last_output"]["position_size"], 250.0)
         self.assertAlmostEqual(snapshot["last_output"]["stop_loss"], 105.0)
 
+    async def test_risk_agent_scales_down_lower_conviction_trade(self) -> None:
+        """Rich decision payloads should reduce position size when conviction is weaker."""
+
+        ohlcv = build_constant_range_ohlcv()
+        agent = RiskAgent(
+            policy=RiskPolicy(
+                max_risk_per_trade_fraction=0.01,
+                atr_period=14,
+                atr_multiplier=2.0,
+                max_daily_loss_fraction=0.03,
+                max_exposure_fraction=1.0,
+            )
+        )
+
+        strong = await agent.assess(
+            {
+                "action": "BUY",
+                "side": "LONG",
+                "score": 0.55,
+                "confidence": 0.90,
+                "expected_edge": 0.0016,
+                "holding_horizon_estimate": 2,
+                "rationale_codes": ("trade_candidate",),
+                "blockers": (),
+                "supporting_evidence": {"session_phase": "morning"},
+                "size_multiplier": 0.90,
+                "reasoning": "strong-long",
+            },
+            market_signal={
+                "signal": 0.7,
+                "confidence": 0.9,
+                "features": {"volatility_20": 0.012, "spread_bps": 3.0, "dollar_volume": 15_000_000.0},
+            },
+            account_state={"capital": 100_000.0, "daily_loss": 0.0, "gross_exposure": 0.0},
+            ohlcv=ohlcv,
+            symbol="AAPL",
+        )
+        weaker = await agent.assess(
+            {
+                "action": "BUY",
+                "side": "LONG",
+                "score": 0.32,
+                "confidence": 0.62,
+                "expected_edge": 0.0007,
+                "holding_horizon_estimate": 1,
+                "rationale_codes": ("trade_candidate",),
+                "blockers": (),
+                "supporting_evidence": {"session_phase": "morning"},
+                "size_multiplier": 0.35,
+                "reasoning": "weaker-long",
+            },
+            market_signal={
+                "signal": 0.45,
+                "confidence": 0.62,
+                "features": {"volatility_20": 0.012, "spread_bps": 3.0, "dollar_volume": 15_000_000.0},
+            },
+            account_state={"capital": 100_000.0, "daily_loss": 0.0, "gross_exposure": 0.0},
+            ohlcv=ohlcv,
+            symbol="AAPL",
+        )
+
+        self.assertEqual(strong["final_action"], "BUY")
+        self.assertEqual(weaker["final_action"], "BUY")
+        self.assertLess(float(weaker["position_size"]), float(strong["position_size"]))
+
     async def test_incremental_atr_matches_full_recompute(self) -> None:
         """Incremental ATR updates should match a fresh full-frame ATR recomputation."""
 

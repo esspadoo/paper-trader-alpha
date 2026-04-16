@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from trading_system.agents._validation import normalize_news_analysis
+from trading_system.agents.news_scoring import NewsScoringConfig, novelty_from_seen_state, score_article_analysis
 from trading_system.agents.base import BaseAgent
 from trading_system.core.events import BaseEvent, NewsEvent
 from trading_system.data import BaseNewsSource, NewsArticle, NewsDeduplicator
@@ -22,7 +24,9 @@ class NewsAgent(BaseAgent):
         source: BaseNewsSource | None = None,
         analyzer: LocalNewsLLMAnalyzer,
         deduplicator: NewsDeduplicator | None = None,
-        result_cache: TTLCache[str, dict[str, float | str]] | None = None,
+        result_cache: TTLCache[str, dict[str, Any]] | None = None,
+        canonical_result_cache: TTLCache[str, dict[str, Any]] | None = None,
+        scoring_config: NewsScoringConfig | None = None,
         result_ttl_seconds: float = 43_200.0,
     ) -> None:
         """Initialize the NewsAgent and its local analysis pipeline."""
@@ -34,12 +38,16 @@ class NewsAgent(BaseAgent):
         self._source = source
         self._analyzer = analyzer
         self._deduplicator = deduplicator or NewsDeduplicator()
-        self._result_cache = result_cache or TTLCache[str, dict[str, float | str]](
+        self._result_cache = result_cache or TTLCache[str, dict[str, Any]](
             default_ttl_seconds=result_ttl_seconds
         )
+        self._canonical_result_cache = canonical_result_cache or TTLCache[str, dict[str, Any]](
+            default_ttl_seconds=result_ttl_seconds
+        )
+        self._scoring_config = scoring_config or NewsScoringConfig()
         self._result_ttl_seconds = result_ttl_seconds
         self._running = False
-        self._last_output: dict[str, float | str] | None = None
+        self._last_output: dict[str, Any] | None = None
         self._last_article_fingerprint: str | None = None
 
     @property
@@ -79,16 +87,23 @@ class NewsAgent(BaseAgent):
 
         fetched = await self._source.fetch_articles()
         batch_fingerprints: set[str] = set()
+        batch_canonical_fingerprints: set[str] = set()
         unique_articles: list[NewsArticle] = []
         for article in fetched:
             fingerprint = article.fingerprint
-            if fingerprint in batch_fingerprints or self._deduplicator.has_seen(article):
+            canonical_fingerprint = article.canonical_fingerprint
+            if (
+                fingerprint in batch_fingerprints
+                or canonical_fingerprint in batch_canonical_fingerprints
+                or self._deduplicator.has_seen(article)
+            ):
                 continue
             batch_fingerprints.add(fingerprint)
+            batch_canonical_fingerprints.add(canonical_fingerprint)
             unique_articles.append(article)
         return unique_articles
 
-    async def analyze_article(self, article: NewsArticle) -> dict[str, float | str]:
+    async def analyze_article(self, article: NewsArticle) -> dict[str, Any]:
         """Analyze a single article with deduplication and cached results."""
 
         cached = self._result_cache.get(article.fingerprint)
@@ -97,17 +112,41 @@ class NewsAgent(BaseAgent):
             self._last_article_fingerprint = article.fingerprint
             return cached
 
-        analysis = (await self._analyzer.analyze(article)).to_dict()
+        canonical_cached = self._canonical_result_cache.get(article.canonical_fingerprint)
+        if canonical_cached is not None:
+            self._result_cache.set(article.fingerprint, canonical_cached, ttl_seconds=self._result_ttl_seconds)
+            self._last_output = canonical_cached
+            self._last_article_fingerprint = article.fingerprint
+            return canonical_cached
+
+        seen_exact = self._deduplicator.has_seen_exact(article)
+        seen_canonical = self._deduplicator.has_seen_canonical(article)
+        base_analysis = (await self._analyzer.analyze(article)).to_dict()
+        enriched = score_article_analysis(
+            article=article,
+            sentiment=float(base_analysis["sentiment"]),
+            impact=float(base_analysis["impact"]),
+            event_type=str(base_analysis["event_type"]),
+            summary=str(base_analysis["summary"]),
+            novelty_score=novelty_from_seen_state(
+                seen_exact=seen_exact,
+                seen_canonical=seen_canonical,
+                config=self._scoring_config,
+            ),
+            config=self._scoring_config,
+        ).to_dict()
+        analysis = normalize_news_analysis(enriched)
         self._deduplicator.mark_seen(article)
         self._result_cache.set(article.fingerprint, analysis, ttl_seconds=self._result_ttl_seconds)
+        self._canonical_result_cache.set(article.canonical_fingerprint, analysis, ttl_seconds=self._result_ttl_seconds)
         self._last_output = analysis
         self._last_article_fingerprint = article.fingerprint
         return analysis
 
-    async def poll(self) -> list[dict[str, float | str]]:
+    async def poll(self) -> list[dict[str, Any]]:
         """Fetch, deduplicate, and analyze the latest articles from the source."""
 
-        results: list[dict[str, float | str]] = []
+        results: list[dict[str, Any]] = []
         for article in await self.ingest():
             results.append(await self.analyze_article(article))
         return results

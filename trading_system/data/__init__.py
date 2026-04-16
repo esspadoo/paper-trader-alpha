@@ -12,7 +12,14 @@ from trading_system.data.exceptions import (
     ProviderConfigurationError,
 )
 from trading_system.data.market_data import MarketDataStream
-from trading_system.data.news import BaseNewsSource, JSONNewsSource, NewsArticle, NewsDeduplicator, RSSNewsSource
+from trading_system.data.news import (
+    BaseNewsSource,
+    CompositeNewsSource,
+    JSONNewsSource,
+    NewsArticle,
+    NewsDeduplicator,
+    RSSNewsSource,
+)
 from trading_system.data.providers import (
     IBKRMarketDataProvider,
     MarketDataProvider,
@@ -37,6 +44,7 @@ __all__ = [
     "UniverseSelectionCriteria",
     "NewsArticle",
     "BaseNewsSource",
+    "CompositeNewsSource",
     "RSSNewsSource",
     "JSONNewsSource",
     "NewsDeduplicator",

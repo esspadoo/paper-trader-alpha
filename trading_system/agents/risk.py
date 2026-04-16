@@ -8,7 +8,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
-from trading_system.agents._validation import normalize_decision_output, normalize_market_signal
+from trading_system.agents._validation import (
+    extract_dollar_volume,
+    extract_session_phase,
+    extract_spread_bps,
+    extract_volatility,
+    normalize_decision_output,
+    normalize_market_signal,
+)
 from trading_system.agents.base import BaseAgent
 from trading_system.core.events import BaseEvent, MarketEvent, SignalEvent
 from trading_system.models.dependencies import require_pandas
@@ -333,7 +340,16 @@ class RiskAgent(BaseAgent):
                 reason="stop distance is non-positive; refusing to size the trade",
             )
 
-        risk_budget = account_state["capital"] * self._policy.max_risk_per_trade_fraction
+        conviction_scale = self._decision_conviction_scale(decision=decision, market_signal=self._latest_market_signal)
+        if conviction_scale <= 0.0:
+            return RiskAssessment(
+                final_action="HOLD",
+                position_size=0.0,
+                stop_loss=0.0,
+                reason="decision conviction scaled the trade to zero after risk-quality adjustments",
+            )
+
+        risk_budget = account_state["capital"] * self._policy.max_risk_per_trade_fraction * conviction_scale
         size_from_risk = risk_budget / stop_distance
         size_from_exposure = remaining_exposure / entry_price
         position_size = min(size_from_risk, size_from_exposure)
@@ -361,9 +377,67 @@ class RiskAgent(BaseAgent):
             reason=(
                 f"risk-approved {action} on {symbol}: "
                 f"atr={atr_value:.4f}, stop_distance={stop_distance:.4f}, "
-                f"risk_budget={risk_budget:.2f}, remaining_exposure={remaining_exposure:.2f}"
+                f"risk_budget={risk_budget:.2f}, remaining_exposure={remaining_exposure:.2f}, "
+                f"conviction_scale={conviction_scale:.4f}"
             ),
         )
+
+    def _decision_conviction_scale(
+        self,
+        *,
+        decision: Mapping[str, Any],
+        market_signal: Mapping[str, Any],
+    ) -> float:
+        """Return the conviction-adjusted participation fraction for a trade."""
+
+        features = dict(market_signal["features"])
+        size_multiplier = float(decision.get("size_multiplier", 0.0))
+        decision_confidence = float(decision.get("confidence", 0.0))
+        expected_edge = abs(float(decision.get("expected_edge", 0.0)))
+        rationale_codes = tuple(decision.get("rationale_codes", ()) or ())
+        blockers = tuple(decision.get("blockers", ()) or ())
+        is_legacy_payload = (
+            size_multiplier == 0.0
+            and decision_confidence == 0.0
+            and expected_edge == 0.0
+            and not rationale_codes
+            and not blockers
+        )
+
+        if is_legacy_payload:
+            scale = 1.0
+        else:
+            base_multiplier = size_multiplier if size_multiplier > 0.0 else min(max(abs(float(decision["score"])), 0.10), 1.0)
+            confidence_scale = max(decision_confidence, float(market_signal["confidence"]))
+            edge_scale = min(max(expected_edge / 0.00120, 0.10), 1.0)
+            scale = base_multiplier * (0.45 + (0.55 * confidence_scale)) * edge_scale
+
+        spread_bps = extract_spread_bps(features)
+        if spread_bps is not None:
+            if spread_bps >= 20.0:
+                return 0.0
+            if spread_bps >= 12.0:
+                scale *= 0.70
+
+        dollar_volume = extract_dollar_volume(features)
+        if dollar_volume is not None:
+            if dollar_volume < 2_000_000.0:
+                return 0.0
+            if dollar_volume < 7_500_000.0:
+                scale *= 0.75
+
+        volatility = extract_volatility(features)
+        if volatility is not None and volatility >= 0.025:
+            scale *= 0.65
+
+        session_phase = extract_session_phase(features)
+        if session_phase in {"open", "close"}:
+            scale *= 0.85
+
+        scale = float(max(min(scale, 1.0), 0.0))
+        if scale < 0.10:
+            return 0.0
+        return scale
 
     def _resolve_entry_price_and_symbol(self, ohlcv: "pd.DataFrame") -> tuple[float, str]:
         """Resolve the active symbol and entry price from cached state."""

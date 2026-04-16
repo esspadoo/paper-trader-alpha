@@ -364,6 +364,104 @@ class RuntimeConfig(_BaseConfigModel):
         return value
 
 
+class SafetyConfig(_BaseConfigModel):
+    """Hard safety controls for live and paper runtime behavior."""
+
+    kill_switch_enabled: bool = True
+    cancel_open_orders_on_kill_switch: bool = True
+    fail_closed_on_startup_reconciliation: bool = True
+    startup_position_reconciliation: bool = True
+    startup_position_quantity_tolerance: float = 1e-6
+    max_daily_loss_shutdown_fraction: float = 0.05
+    dry_run: bool = False
+
+    @field_validator("startup_position_quantity_tolerance")
+    @classmethod
+    def _validate_startup_tolerance(cls, value: float) -> float:
+        """Require a non-negative reconciliation tolerance."""
+
+        if value < 0.0:
+            raise ValueError("startup_position_quantity_tolerance must be greater than or equal to 0")
+        return float(value)
+
+    @field_validator("max_daily_loss_shutdown_fraction")
+    @classmethod
+    def _validate_shutdown_fraction(cls, value: float) -> float:
+        """Require a bounded daily-loss shutdown fraction."""
+
+        if value <= 0.0 or value > 1.0:
+            raise ValueError("max_daily_loss_shutdown_fraction must be between 0 and 1")
+        return float(value)
+
+
+class PersistenceConfig(_BaseConfigModel):
+    """Persistence and journaling configuration."""
+
+    state_store_path: str = "state/runtime_state.db"
+    audit_journal_path: str = "state/events.jsonl"
+    dead_letter_path: str = "state/dead_letters.jsonl"
+    alert_journal_path: str = "state/alerts.jsonl"
+    snapshot_interval_seconds: float = 10.0
+    replay_history_bars: int = 64
+    enable_event_audit: bool = True
+    enable_dead_letter_journal: bool = True
+    enable_alert_journal: bool = True
+
+    @field_validator("state_store_path", "audit_journal_path", "dead_letter_path", "alert_journal_path")
+    @classmethod
+    def _validate_paths(cls, value: str, info: Any) -> str:
+        """Require non-empty persistence paths."""
+
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return value
+
+    @field_validator("snapshot_interval_seconds")
+    @classmethod
+    def _validate_snapshot_interval(cls, value: float) -> float:
+        """Require a positive snapshot interval."""
+
+        if value <= 0.0:
+            raise ValueError("snapshot_interval_seconds must be greater than 0")
+        return float(value)
+
+    @field_validator("replay_history_bars")
+    @classmethod
+    def _validate_replay_history_bars(cls, value: int) -> int:
+        """Require a useful replay history window."""
+
+        if value < 16:
+            raise ValueError("replay_history_bars must be at least 16")
+        return value
+
+
+class ObservabilityConfig(_BaseConfigModel):
+    """Operational heartbeat, maintenance, and latency-observability settings."""
+
+    heartbeat_interval_seconds: float = 5.0
+    maintenance_interval_seconds: float = 5.0
+    kill_switch_poll_seconds: float = 2.0
+    latency_alert_threshold_ms: float = 100.0
+
+    @field_validator("heartbeat_interval_seconds", "maintenance_interval_seconds", "kill_switch_poll_seconds")
+    @classmethod
+    def _validate_positive_intervals(cls, value: float, info: Any) -> float:
+        """Require positive operational intervals."""
+
+        if value <= 0.0:
+            raise ValueError(f"{info.field_name} must be greater than 0")
+        return float(value)
+
+    @field_validator("latency_alert_threshold_ms")
+    @classmethod
+    def _validate_latency_alert_threshold(cls, value: float) -> float:
+        """Require a positive alert threshold."""
+
+        if value <= 0.0:
+            raise ValueError("latency_alert_threshold_ms must be greater than 0")
+        return float(value)
+
+
 class SystemConfig(_BaseConfigModel):
     """Complete application configuration."""
 
@@ -375,6 +473,9 @@ class SystemConfig(_BaseConfigModel):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    persistence: PersistenceConfig = Field(default_factory=PersistenceConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
     @model_validator(mode="after")
     def _validate_cross_section_constraints(self) -> "SystemConfig":
@@ -388,6 +489,9 @@ class SystemConfig(_BaseConfigModel):
 
         if not self.runtime.allow_demo_components and self.news.backend == "demo":
             raise ValueError("demo news backend is disabled when runtime.allow_demo_components = false")
+
+        if self.safety.dry_run and self.runtime.mode is DeploymentMode.LIVE:
+            raise ValueError("runtime.mode = 'live' cannot be combined with safety.dry_run = true")
 
         if self.runtime.mode is DeploymentMode.LIVE:
             if self.execution.broker != "ibkr":
@@ -406,6 +510,8 @@ class SystemConfig(_BaseConfigModel):
                 raise ValueError("live mode cannot use the demo local-LLM backend")
             if self.news.source_type == "json":
                 raise ValueError("live mode cannot use a static json news source")
+            if self.execution.read_only:
+                raise ValueError("live mode requires execution.read_only = false")
         return self
 
 
@@ -427,7 +533,19 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> dict[str, Any]:
     """Overlay well-scoped environment variables onto the parsed TOML payload."""
 
     merged = dict(payload)
-    for section in ("logging", "market", "news", "decision", "critic", "risk", "execution", "runtime"):
+    for section in (
+        "logging",
+        "market",
+        "news",
+        "decision",
+        "critic",
+        "risk",
+        "execution",
+        "runtime",
+        "safety",
+        "persistence",
+        "observability",
+    ):
         existing = merged.get(section)
         if existing is None:
             merged[section] = {}
@@ -445,6 +563,8 @@ def _apply_environment_overrides(payload: dict[str, Any]) -> dict[str, Any]:
         "TRADING_SYSTEM_CONFIRM_LIVE_ACCOUNT": ("execution", "confirm_live_account", "str"),
         "TRADING_SYSTEM_NEWS_BACKEND": ("news", "backend", "str"),
         "TRADING_SYSTEM_NEWS_BASE_URL": ("news", "base_url", "str"),
+        "TRADING_SYSTEM_DRY_RUN": ("safety", "dry_run", "bool"),
+        "TRADING_SYSTEM_STATE_STORE_PATH": ("persistence", "state_store_path", "str"),
     }
 
     for env_name, (section, field_name, value_type) in env_map.items():

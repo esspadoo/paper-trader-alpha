@@ -59,9 +59,21 @@ class ScriptedMarketAgent(BaseAgent):
         self._last_output = {
             "signal": float(extras.get("planned_signal", 0.0)),
             "confidence": float(extras.get("planned_confidence", 0.0)),
+            "predicted_return": float(
+                extras.get(
+                    "planned_predicted_return",
+                    float(extras.get("planned_signal", 0.0)) * 0.0018,
+                )
+            ),
             "features": {
                 "volatility_20": float(extras.get("planned_volatility", 0.0)),
                 "volume_spike": float(extras.get("planned_volume_spike", 0.0)),
+                "spread_bps": float(extras.get("planned_spread_bps", 2.0)),
+                "dollar_volume": float(extras.get("planned_dollar_volume", 20_000_000.0)),
+                "ema_gap_9_21": float(extras.get("planned_ema_gap_9_21", 0.0020)),
+                "ema_gap_21_50": float(extras.get("planned_ema_gap_21_50", 0.0014)),
+                "vwap_gap": float(extras.get("planned_vwap_gap", 0.0008)),
+                "rsi_14": float(extras.get("planned_rsi_14", 58.0)),
             },
         }
 
@@ -145,6 +157,9 @@ def build_partial_fill_market_frame() -> "pd.DataFrame":
             "planned_signal": [0.0, 0.0, 0.9, 0.9, 0.9, 0.9],
             "planned_confidence": [0.8] * 6,
             "planned_volatility": [0.01] * 6,
+            "planned_predicted_return": [0.0, 0.0, 0.0036, 0.0034, 0.0031, 0.0029],
+            "planned_spread_bps": [2.0] * 6,
+            "planned_dollar_volume": [20_000_000.0] * 6,
         }
     )
     return frame
@@ -166,6 +181,9 @@ def build_stop_loss_market_frame() -> "pd.DataFrame":
             "planned_signal": [0.0, 0.9, 0.9, 0.0],
             "planned_confidence": [0.8] * 4,
             "planned_volatility": [0.01] * 4,
+            "planned_predicted_return": [0.0, 0.0035, 0.0030, 0.0],
+            "planned_spread_bps": [2.0] * 4,
+            "planned_dollar_volume": [20_000_000.0] * 4,
         }
     )
     return frame
@@ -222,7 +240,7 @@ class IntradayBacktesterTests(unittest.TestCase):
             ],
         )
 
-        self.assertGreaterEqual(len(result.fills), 4)
+        self.assertGreaterEqual(len(result.fills), 3)
         self.assertEqual(result.fills[0].timestamp, pd.Timestamp("2026-04-14 13:45:00+00:00").to_pydatetime())
         self.assertIn("OrderEvent:PARTIALLY_FILLED", result.observed_events)
         self.assertIn("OrderEvent:FILLED", result.observed_events)

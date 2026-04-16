@@ -270,6 +270,7 @@ class XGBoostReturnModel(BaseModel):
             for key, value in latest_features.loc[list(self._feature_names)].to_dict().items()
         }
         return {
+            "predicted_return": float(prediction["predicted_return"]),
             "signal": float(prediction["signal"]),
             "confidence": float(prediction["confidence"]),
             "features": feature_payload,
@@ -303,6 +304,7 @@ class XGBoostReturnModel(BaseModel):
             self._latency_recorder.record_ns("market_feature_compute", perf_counter_ns() - features_started_at_ns)
         prediction = self.predict(feature_payload)
         return {
+            "predicted_return": float(prediction["predicted_return"]),
             "signal": float(prediction["signal"]),
             "confidence": float(prediction["confidence"]),
             "features": feature_payload,

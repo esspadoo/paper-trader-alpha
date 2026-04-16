@@ -79,3 +79,39 @@ The example config uses:
 - A local JSON news feed at `examples/demo_news.json`
 - A deterministic local demo backend for news analysis
 - The in-memory paper broker for execution
+
+## Operations
+
+Health:
+
+```bash
+python main.py --config config/trading_system.example.toml health
+```
+
+Metrics:
+
+```bash
+python main.py --config config/trading_system.example.toml metrics
+```
+
+Replay:
+
+```bash
+python main.py --config config/trading_system.example.toml replay
+```
+
+Kill switch:
+
+```bash
+python main.py --config config/trading_system.example.toml kill-switch status
+python main.py --config config/trading_system.example.toml kill-switch engage --reason "manual halt"
+python main.py --config config/trading_system.example.toml kill-switch release --reason "operator release"
+```
+
+## Documentation
+
+- [Deployment Guide](docs/deployment_guide.md)
+- [Runbook](docs/runbook.md)
+- [Paper Trading Checklist](docs/paper_trading_checklist.md)
+- [Live Trading Checklist](docs/live_trading_checklist.md)
+- [Platform Gap Assessment](docs/platform_gap_assessment.md)

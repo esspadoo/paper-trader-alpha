@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from trading_system.agents import CriticAgent, DecisionAgent, RiskAgent
 from trading_system.agents._validation import normalize_market_signal, normalize_news_analysis
@@ -41,6 +43,7 @@ class AgentBacktestCoordinator:
         self._logger = logger or logging.getLogger(__name__)
         self._engine: Engine | None = None
         self._latest_news: dict[str, dict[str, float | str]] = {}
+        self._us_eastern = ZoneInfo("America/New_York")
 
     def bind_engine(self, engine: Engine) -> None:
         """Bind the coordinator to an engine for event publication."""
@@ -103,6 +106,7 @@ class AgentBacktestCoordinator:
         market_signal = await self._resolve_market_signal(event)
         if market_signal is None:
             return
+        market_signal = self._augment_market_signal(event=event, market_signal=market_signal)
 
         await self._engine.publish(
             SignalEvent(
@@ -127,7 +131,12 @@ class AgentBacktestCoordinator:
         if self._decision_agent is None:
             raise ValueError("decision_agent is required for intraday backtesting")
 
-        decision = await self._decision_agent.decide(market_signal=market_signal, news_analysis=news_analysis)
+        decision = await self._decision_agent.decide(
+            market_signal=market_signal,
+            news_analysis=news_analysis,
+            symbol=symbol,
+            occurred_at=event.occurred_at,
+        )
         await self._engine.publish(
             SignalEvent(
                 source=self._decision_agent.agent_id,
@@ -146,6 +155,8 @@ class AgentBacktestCoordinator:
                 decision,
                 market_signal=market_signal,
                 news_analysis=news_analysis,
+                symbol=symbol,
+                occurred_at=event.occurred_at,
             )
             if not bool(review["approved"]):
                 self._logger.info("critic rejected %s on %s: %s", symbol, event.occurred_at.isoformat(), review["reason"])
@@ -234,3 +245,39 @@ class AgentBacktestCoordinator:
         """Return the configured agents in pipeline order."""
 
         return tuple(agent for agent in (self._market_agent, self._news_agent, self._decision_agent, self._critic_agent, self._risk_agent) if agent is not None)
+
+    def _augment_market_signal(self, *, event: MarketEvent, market_signal: Mapping[str, Any]) -> dict[str, Any]:
+        """Attach lightweight session and spread context to the market signal."""
+
+        enriched = dict(market_signal)
+        features = dict(market_signal["features"])
+        features.setdefault("session_phase", self._session_phase(event.occurred_at))
+        if event.bid is not None and event.ask is not None:
+            bid = float(event.bid)
+            ask = float(event.ask)
+            mid = (bid + ask) / 2.0
+            if bid > 0.0 and ask > 0.0 and ask >= bid and mid > 0.0:
+                features.setdefault("spread_bps", ((ask - bid) / mid) * 10_000.0)
+        if "dollar_volume" not in features and event.last_price is not None and event.volume is not None:
+            features["dollar_volume"] = float(event.last_price) * float(event.volume)
+        enriched["features"] = features
+        if event.symbol:
+            enriched["symbol"] = event.symbol.strip().upper()
+        return enriched
+
+    def _session_phase(self, timestamp: datetime) -> str:
+        """Return a coarse US cash-session phase."""
+
+        eastern = timestamp.astimezone(self._us_eastern)
+        clock = eastern.time()
+        if clock < datetime(2000, 1, 1, 9, 30).time() or clock >= datetime(2000, 1, 1, 16, 0).time():
+            return "outside_rth"
+        if clock < datetime(2000, 1, 1, 10, 0).time():
+            return "open"
+        if clock < datetime(2000, 1, 1, 12, 0).time():
+            return "morning"
+        if clock < datetime(2000, 1, 1, 14, 0).time():
+            return "lunch"
+        if clock < datetime(2000, 1, 1, 15, 30).time():
+            return "afternoon"
+        return "close"

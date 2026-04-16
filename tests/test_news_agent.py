@@ -150,6 +150,78 @@ class NewsAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_snapshot["last_output"]["event_type"], "regulation")
         self.assertEqual(first_snapshot["last_output"], second_snapshot["last_output"])
 
+    async def test_news_agent_enriches_company_news_with_deterministic_scores(self) -> None:
+        """Structured LLM output should be enriched with catalyst, scope, and credibility scores."""
+
+        backend = FakeLocalLLMBackend(
+            ['{"sentiment": 0.8, "impact": 0.9, "event_type": "earnings", "summary": "Strong beat and raised guidance."}']
+        )
+        agent = NewsAgent(analyzer=LocalNewsLLMAnalyzer(backend))
+        event = NewsEvent(
+            source="reuters",
+            headline="ACME beats and raises guidance",
+            body="ACME posted a strong beat and raised full-year guidance.",
+            symbols=("ACME",),
+            payload={"url": "https://www.reuters.com/local/acme"},
+            occurred_at=datetime(2026, 4, 15, 13, 45, tzinfo=timezone.utc),
+        )
+
+        await agent.start()
+        await agent.on_event(event)
+        snapshot = await agent.snapshot_state()
+        await agent.stop()
+
+        output = snapshot["last_output"]
+        self.assertEqual(output["scope"], "company")
+        self.assertGreater(float(output["credibility_score"]), 0.8)
+        self.assertGreater(float(output["catalyst_score"]), 0.5)
+        self.assertGreater(float(output["effective_sentiment"]), 0.0)
+        self.assertTrue(bool(output["is_high_impact"]))
+
+    async def test_news_agent_deduplicates_near_duplicate_articles_in_same_batch(self) -> None:
+        """Near-duplicate articles should only be analyzed once per batch."""
+
+        payload = b"""
+{
+  "articles": [
+    {
+      "id": "dup-1",
+      "headline": "ACME launches new platform",
+      "link": "https://wire.local/acme-1",
+      "description": "ACME launches a new platform for enterprise clients.",
+      "body": "The company launches a new platform for enterprise clients.",
+      "published_at": "2026-04-15T10:00:00Z",
+      "tickers": ["ACME"]
+    },
+    {
+      "id": "dup-2",
+      "headline": "ACME launches new platform",
+      "link": "https://wire.local/acme-2",
+      "description": "ACME launches a new platform for enterprise clients.",
+      "body": "The company launches a new platform for enterprise clients.",
+      "published_at": "2026-04-15T10:01:00Z",
+      "tickers": ["ACME"]
+    }
+  ]
+}
+"""
+        source = JSONNewsSource(
+            source_name="json-local",
+            endpoint="memory://json",
+            fetcher=lambda target, timeout: payload,
+        )
+        backend = FakeLocalLLMBackend(
+            ['{"sentiment": 0.4, "impact": 0.5, "event_type": "product_launch", "summary": "Launch may support intraday demand."}']
+        )
+        agent = NewsAgent(source=source, analyzer=LocalNewsLLMAnalyzer(backend))
+
+        await agent.start()
+        results = await agent.poll()
+        await agent.stop()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(backend.calls, 1)
+
 
 class StrictJSONTests(unittest.TestCase):
     """Verify strict JSON parsing rejects malformed local-LLM output."""

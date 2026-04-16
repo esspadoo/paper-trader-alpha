@@ -72,3 +72,29 @@ publish_delay_seconds = 0.0
 allow_demo_components = true
 reconcile_on_start = true
 max_log_reason_length = 160
+
+[safety]
+kill_switch_enabled = true
+cancel_open_orders_on_kill_switch = true
+fail_closed_on_startup_reconciliation = true
+startup_position_reconciliation = true
+startup_position_quantity_tolerance = 0.000001
+max_daily_loss_shutdown_fraction = 0.05
+dry_run = false
+
+[persistence]
+state_store_path = "state/runtime_state.db"
+audit_journal_path = "state/events.jsonl"
+dead_letter_path = "state/dead_letters.jsonl"
+alert_journal_path = "state/alerts.jsonl"
+snapshot_interval_seconds = 10.0
+replay_history_bars = 64
+enable_event_audit = true
+enable_dead_letter_journal = true
+enable_alert_journal = true
+
+[observability]
+heartbeat_interval_seconds = 5.0
+maintenance_interval_seconds = 5.0
+kill_switch_poll_seconds = 2.0
+latency_alert_threshold_ms = 100.0

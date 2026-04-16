@@ -165,7 +165,8 @@ class MarketAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreater(summary["training_rows"], 150)
         self.assertGreater(summary["validation_rows"], 0)
-        self.assertEqual(set(output.keys()), {"signal", "confidence", "features"})
+        self.assertEqual(set(output.keys()), {"predicted_return", "signal", "confidence", "features"})
+        self.assertTrue(np.isfinite(output["predicted_return"]))
         self.assertGreaterEqual(output["signal"], -1.0)
         self.assertLessEqual(output["signal"], 1.0)
         self.assertGreaterEqual(output["confidence"], 0.0)
